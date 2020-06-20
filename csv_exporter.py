@@ -1,9 +1,8 @@
 # Copyright Alex Bongiovanni 2020
-#
-#
 
 from krita import *
-from PyQt5.QtWidgets import QWidget, QMessageBox
+from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtWidgets import QMessageBox, QFileDialog
 import os
 import os.path
 import shutil
@@ -38,7 +37,7 @@ BLEND_MODES = {
 
 
 #################################################
-# Methods
+# Auxillary methods
 #################################################
 
 def writeCSVLine(fout, tokenList):
@@ -70,18 +69,16 @@ def flattenNodesToList(root):
 
 
 #################################################
-# Script start
+# Export logic
 #################################################
 
-def main():
-    activeDocument = Krita.instance().activeDocument()
-    batchModeOriginalState = Krita.instance().batchmode()
-    Krita.instance().setBatchmode(True)
+def exportCSV(parentThread, activeDocument, fullFilepath, saveFilename):
+    batchModeOriginalState = activeDocument.batchmode()
+    activeDocument.setBatchmode(True)
     originalTime = activeDocument.currentTime()
     
     #retrieve the basic data
-    fullFilePath = os.path.splitext(activeDocument.fileName())[0]
-    projectName = os.path.split(fullFilePath)[1]
+    projectName = os.path.split(fullFilepath)[1]
     width = activeDocument.width()
     height = activeDocument.height()
     animationStartTime = activeDocument.fullClipRangeStartTime()
@@ -92,10 +89,10 @@ def main():
     documentQRect = QRect(0, 0, width, height)
     
     #check for existing files, ask use if they want to remove
-    csvFilename = fullFilePath + ".csv"
-    framesDirectory = fullFilePath + ".frames"
+    csvFilename = saveFilename
+    framesDirectory = os.path.splitext(saveFilename)[0] + ".frames"
     if os.path.isdir(framesDirectory) or os.path.isfile(csvFilename):
-        confirmDelete = QMessageBox.question(Application.activeWindow().qwindow(), "Files already exist", "CSV export files with the name '" + fullFilePath + "' already exist. Do you want to remove these? This cannot be undone.")
+        confirmDelete = QMessageBox.question(Application.activeWindow().qwindow(), "Files already exist", "CSV export files with the name '" + fullFilepath + "' already exist. Do you want to remove these? This cannot be undone.")
         if confirmDelete == QMessageBox.Yes:
             shutil.rmtree(framesDirectory)
         else:
@@ -106,6 +103,8 @@ def main():
     except OSError as e:
         QMessageBox.information(Application.activeWindow().qwindow(), "Export failed", "Error creating output directory: " + str(e))
         return
+    
+    parentThread.writeMessageSignal.emit("Sorting layers")
     
     #get all the non-group layers in a list, we don't care about the layer hierarchy
     layerNodes = flattenNodesToList(activeDocument.rootNode())
@@ -183,26 +182,94 @@ def main():
             writeCSVLine(fout, line)
     
     #reset batch mode (is this necessary?) and alert the user we're finished
-    Krita.instance().setBatchmode(batchModeOriginalState)
+    activeDocument.setBatchmode(batchModeOriginalState)
     activeDocument.setCurrentTime(originalTime)
     print("Done!")
 
-#Krita automagically runs the main function
-#if __name__ == "__main__":
-#    main()
 
-"""
-Still to be done:
+#################################################
+# Interface stuff
+#################################################
 
-quote the names of things
+class ExportThread(QThread):
+    writeMessageSignal = pyqtSignal(str, name="csv_export_message")
+    
+    def __init__(self, activeDocument, fullFilepath, saveFilename):
+        super().__init__()
+        this.activeDocument = activeDocument
+        this.fullFilepath = fullFilepath
+        this.saveFilename = saveFilename
+        
+    def run(self):
+        exportCSV(self, this.activeDocument, this.fullFilepath, this.saveFilename)
 
-add progress bar and run this in a separate thread
+class ExportProgressBox(QMessageBox):
+    def __init__(self):
+        super().__init__()
+        
+        self.setMinimumSize(700, 300)
+        self.setWindowTitle("Export to CSV")
+        self.setText("Exporting files...")
+        self.setStandardButtons(QMessageBox.Cancel)
+        # self.addButton("Cancel1", QMessageBox.DestructiveRole)
+        
+        self.completed = False
+        self.startedThread = False
+        self.exporter = None
+            
+    def showEvent(self, event):
+        if not self.startedThread and self.exporter != None:
+            self.exporter.start()
+            self.startedThread = True
+        super().showEvent(event)
+    
+    def close(self):
+        print("yolo")
+        super().close()
+        
+    def closeEvent(self, event):
+        print("here")
+        if not self.completed:
+            # event.ignore()
+            self.exporter.terminate()
+            print("Tried to terminate")
+        super().closeEvent(event)
+        
+    def buttonPressed(self, button):
+        print()
+        super().close()
+    
+    def keyPressedEvent(self, event):
+        print("poop")
+        super().close()
+    
+    @pyqtSlot()
+    def completedExport(self):
+        self.completed = True
+        self.close()
+        
+    @pyqtSlot(str)
+    def writeMessage(self, message):
+        self.setText(message)
+        
 
-folder support?
-
-figure out how layer groups get animated
-
-license (how work with krita?) and copyright
-
-package it for distribution?
-"""
+def displayCSVExportPrompt():
+    activeDocument = Application.activeDocument()
+    fullFilepath = os.path.splitext(activeDocument.fileName())[0]
+    saveFilename, selectedFilter = QFileDialog.getSaveFileName(Application.activeWindow().qwindow(), "Export CSV", fullFilePath, filter="CSV files (*.csv)")
+    
+    progressBox = ExportProgressBox(activeDocument, fullFilepath, saveFilename)
+    # progressBox.parent = Application.activeWindow().qwindow()
+    
+    exporter = ExportThread()
+    exporter.finished.connect(progressBox.completedExport)
+    exporter.writeMessageSignal.connect(progressBox.writeMessage)
+    progressBox.exporter = exporter
+    
+    progressBox.buttonClicked.connect(progressBox.buttonPressed)
+    progressBox.exec_()
+    
+    
+#Krita automagically runs a function named "main" if used from scripter
+if __name__ == "__main__":
+    displayCSVExportPrompt()
