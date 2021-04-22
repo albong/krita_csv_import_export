@@ -224,7 +224,7 @@ class ExportProgressBox(QMessageBox):
         super().showEvent(event)
     
     def close(self):
-        print("yolo")
+        print("here1")
         super().close()
         
     def closeEvent(self, event):
@@ -240,7 +240,7 @@ class ExportProgressBox(QMessageBox):
         super().close()
     
     def keyPressedEvent(self, event):
-        print("poop")
+        print("here2")
         super().close()
     
     @pyqtSlot()
